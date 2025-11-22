@@ -17,9 +17,7 @@
         }
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
-    
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-    
     <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -50,6 +48,18 @@
             font-size: 0.875rem;
             margin-top: 0.25rem;
         }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="bg-gray-50 p-6 sm:p-10 font-sans">
@@ -76,6 +86,11 @@
             </div>
         </nav>
 
+        <div id="loading-state" class="flex flex-col items-center justify-center py-20 hidden">
+            <div class="loader mb-4"></div>
+            <p class="text-gray-500 font-medium">Syncing with Google Sheets...</p>
+        </div>
+
         <div id="content-container"></div>
         
         <div id="custom-message-box" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50">
@@ -91,8 +106,11 @@
 
     <script>
         (function() {
-            const CSV_DATA = `,,,Entry Date,Exit Date,Symbol,Long or Short,P&L,Fees,Strategy,Comments,Screenshot,Net P&L,% P&L,Account Balance,Result Gross,Result Net,Days Difference,Trade Number,Intraday or Multiday,Day of the week,Status,Month,Year,Day,,,,,,,,,,,,\n`;
-            
+            // ==========================================
+            // TODO: PASTE YOUR GOOGLE APPS SCRIPT URL HERE
+            // ==========================================
+            const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzX-4TcU2HPsCkPm3-Xf9PzjyoDT2V6cIH7CaZLrcXR1fv5kBZLdm_I67aVbpPosrVw/exec"; 
+
             let allTrades = [];
             let filteredTrades = []; 
             let currentFilters = {
@@ -113,12 +131,12 @@
             let strategyChart = null;
             let dailyChart = null;
             
-            // Pagination and sorting variables
             let currentPageNumber = 1;
             let tradesPerPage = 20;
-            let sortOrder = 'desc'; // 'asc' for oldest first, 'desc' for newest first
+            let sortOrder = 'desc';
 
             const contentContainer = document.getElementById('content-container');
+            const loadingState = document.getElementById('loading-state');
             const tabButtons = {
                 'Overview': document.getElementById('tab-overview'),
                 'Calendar': document.getElementById('tab-calendar'),
@@ -126,6 +144,90 @@
             };
             const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
             const FIXED_STRATEGIES = ['FVG', 'Liquidity Sweep', 'FVG + LS', 'Plan Not Followed'];
+
+            // --- FETCH & DATA PARSING ---
+
+            const fetchTradesFromSheet = async () => {
+                if (GOOGLE_SCRIPT_URL === "PASTE_YOUR_WEB_APP_URL_HERE") {
+                    alert("Please configure the GOOGLE_SCRIPT_URL in the code.");
+                    return [];
+                }
+
+                try {
+                    const response = await fetch(GOOGLE_SCRIPT_URL);
+                    const data = await response.json();
+                    return parseSheetData(data);
+                } catch (error) {
+                    console.error("Error fetching data:", error);
+                    showMessageBox("Connection Error", "Could not load data from Google Sheets.");
+                    return [];
+                }
+            };
+
+            const parseSheetData = (rows) => {
+                // Header row is row 0. Data starts at row 1.
+                const dataRows = rows.slice(1); 
+
+                return dataRows.map((columns, index) => {
+                    // Ensure row has enough columns (at least up to year/P&L)
+                    if (!columns || columns.length < 8) return null;
+
+                    const parseNum = (val) => {
+                        if (typeof val === 'number') return val;
+                        const num = parseFloat(val);
+                        return isNaN(num) ? 0 : num;
+                    };
+
+                    // MAPPING A-J (0-9)
+                    // 0: ID
+                    // 1: Trade Number
+                    // 2: Entry Date
+                    // 3: Symbol
+                    // 4: Strategy
+                    // 5: P&L
+                    // 6: Month
+                    // 7: Year
+                    // 8: HTF Link
+                    // 9: LTF Link
+
+                    const entryDateVal = columns[2] ? new Date(columns[2]).toISOString().split('T')[0] : null;
+                    
+                    if (!entryDateVal) return null;
+
+                    return {
+                        id: columns[0],
+                        tradeNumber: columns[1] || (index + 1).toString(),
+                        entryDate: entryDateVal,
+                        symbol: columns[3] || 'N/A',
+                        strategy: columns[4] || 'Uncategorized',
+                        pnl: parseNum(columns[5]),
+                        netPnl: parseNum(columns[5]), // Mapping P&L to Net P&L
+                        month: columns[6] || 'N/A',
+                        year: columns[7] ? columns[7].toString() : 'N/A',
+                        htfLink: columns[8] || '',
+                        ltfLink: columns[9] || ''
+                    };
+                }).filter(t => t !== null);
+            };
+
+            const saveTradeToSheet = async (tradeData) => {
+                const requestOptions = {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' }, 
+                    body: JSON.stringify(tradeData)
+                };
+
+                try {
+                    const response = await fetch(GOOGLE_SCRIPT_URL, requestOptions);
+                    const result = await response.json();
+                    return result;
+                } catch (error) {
+                    console.error("Error saving trade:", error);
+                    throw error;
+                }
+            };
+
+            // --- UI HELPERS ---
 
             const showMessageBox = (title, message) => {
                 const box = document.getElementById('custom-message-box');
@@ -158,46 +260,7 @@
                 }, 300); 
             };
 
-            const simpleParseCSV = (csvText) => {
-                const rows = csvText.trim().split('\n').filter(r => r.trim() !== '');
-                if (rows.length < 2) return []; 
-
-                const trades = rows.slice(1).map((row, index) => {
-                    if (row.includes('Entry Date')) return null;
-
-                    const columns = row.split(',');
-                    if (columns.length < 23) return null; 
-
-                    const parseNum = (val) => {
-                        const num = parseFloat(val);
-                        return isNaN(num) ? 0 : num;
-                    };
-
-                    const pnl = parseNum(columns[7]);
-                    const fees = parseNum(columns[8]);
-                    const netPnl = parseNum(columns[12]);
-                    const entryDateVal = columns[3];
-                    
-                    if (!entryDateVal) return null;
-
-                    return {
-                        id: index + 1,
-                        tradeNumber: columns[16] || (index + 1).toString(), 
-                        entryDate: entryDateVal, 
-                        symbol: columns[5] || 'N/A',
-                        pnl: pnl,
-                        fees: fees,
-                        strategy: columns[9] || 'Uncategorized', 
-                        netPnl: netPnl,
-                        month: columns[21] || 'N/A',
-                        year: columns[22] || 'N/A',
-                        htfLink: '', 
-                        ltfLink: ''  
-                    };
-                }).filter(t => t !== null); 
-
-                return trades;
-            };
+            // --- CALCS & CHARTS ---
 
             const calculateStats = (trades) => {
                 if (!trades.length) {
@@ -391,7 +454,6 @@
                 });
             };
             
-            // Sort trades based on current sort order
             const sortTrades = (trades) => {
                 return [...trades].sort((a, b) => {
                     const aDate = new Date(a.entryDate);
@@ -405,7 +467,6 @@
                 });
             };
             
-            // Get paginated trades
             const getPaginatedTrades = (trades) => {
                 const sortedTrades = sortTrades(trades);
                 const startIndex = (currentPageNumber - 1) * tradesPerPage;
@@ -413,7 +474,6 @@
                 return sortedTrades.slice(startIndex, endIndex);
             };
             
-            // Render pagination controls
             const renderPagination = (totalTrades) => {
                 const totalPages = Math.ceil(totalTrades / tradesPerPage);
                 if (totalPages <= 1) return '';
@@ -504,7 +564,7 @@
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-center">${htfBtn}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-center">${ltfBtn}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
-                                <button onclick="window.app.deleteTrade(${trade.id})" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Trade">
+                                <button class="text-gray-400 cursor-not-allowed" title="Delete directly in Google Sheets">
                                     <i data-lucide="trash-2" class="w-4 h-4"></i>
                                 </button>
                             </td>
@@ -655,7 +715,7 @@
                     
                     ${filteredTrades.length === 0 ? `
                         <div class="p-10 bg-white rounded-2xl shadow-xl border border-gray-200 min-h-[400px] flex items-center justify-center">
-                            <p class="text-xl text-gray-500 font-semibold">No trades selected. Please adjust your filters to view performance metrics.</p>
+                            <p class="text-xl text-gray-500 font-semibold">No trades selected (or no data found). Please adjust your filters.</p>
                         </div>
                     ` : `
                         <section class="mb-10">
@@ -700,7 +760,7 @@
                                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
                                             <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">HTF</th>
                                             <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">LTF</th>
-                                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Delete</th>
+                                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
                                         </tr>
                                     </thead>
                                     <tbody id="trades-table-body" class="bg-white divide-y divide-gray-100"></tbody>
@@ -743,16 +803,13 @@
                 const firstDayIndex = (getFirstDayOfMonth(year, month) + 6) % 7; 
                 const dailyData = getDailyPnlAndCount(filteredTrades);
                 
-                // Calculate monthly P&L
                 const monthlyPnl = tradesInThisMonth.reduce((sum, trade) => sum + trade.netPnl, 0);
                 const monthlyPnlClass = monthlyPnl >= 0 ? 'text-green-600' : 'text-red-600';
                 const monthlyPnlSign = monthlyPnl >= 0 ? '+' : '';
                 
-                // Build calendar weeks
                 const weeks = [];
-                let currentWeek = Array(6).fill(null); // 6 columns: Mon, Tue, Wed, Thu, Fri, Week Total
+                let currentWeek = Array(6).fill(null); 
                 
-                // Fill empty cells before first day
                 for (let i = 0; i < firstDayIndex; i++) {
                     currentWeek[i] = { type: 'empty' };
                 }
@@ -765,13 +822,11 @@
                     const dateObj = new Date(dateStr);
                     const dayOfWeek = dateObj.getDay();
                     
-                    // Skip weekends (0=Sunday, 6=Saturday)
                     if (dayOfWeek === 0 || dayOfWeek === 6) continue;
                     
-                    const dayIndex = dayOfWeek - 1; // Convert to 0-4 (Mon-Fri)
+                    const dayIndex = dayOfWeek - 1; 
                     const dayData = dailyData[dateStr];
                     
-                    // Add day to current week
                     currentWeek[dayIndex] = {
                         type: 'day',
                         day: day,
@@ -779,35 +834,27 @@
                         isToday: year === today.getFullYear() && month === today.getMonth() && day === today.getDate()
                     };
                     
-                    // Add to week total
                     if (dayData) {
                         weekTotal += dayData.pnl;
                         weekDaysCount++;
                     }
 
-                    // If it's Friday or last day of month, complete the week
                     if (dayOfWeek === 5 || day === daysInMonth) {
-                        // Add week total to the 6th column
                         currentWeek[5] = {
                             type: 'week-total',
                             total: weekTotal
                         };
-                        
                         weeks.push([...currentWeek]);
-                        
-                        // Reset for next week
                         currentWeek = Array(6).fill(null);
                         weekTotal = 0;
                         weekDaysCount = 0;
                     }
                 }
 
-                // Build calendar HTML
                 let calendarHtml = '';
                 
                 weeks.forEach(week => {
                     calendarHtml += '<div class="grid grid-cols-6">';
-                    
                     week.forEach((item, columnIndex) => {
                         if (!item || item.type === 'empty') {
                             calendarHtml += `<div class="p-2 border-r border-b border-gray-100 bg-gray-50/50 text-gray-400 h-28"></div>`;
@@ -815,7 +862,6 @@
                             let pnlHtml = '';
                             let dayClasses = 'p-2 border-r border-b h-28 flex flex-col justify-between transition-colors';
                             
-                            // Set background color based on P&L
                             if (item.dayData) {
                                 const pnlVal = isNaN(item.dayData.pnl) ? 0 : item.dayData.pnl;
                                 if (pnlVal > 0) {
@@ -854,7 +900,6 @@
                             `;
                         }
                     });
-                    
                     calendarHtml += '</div>';
                 });
 
@@ -877,9 +922,12 @@
                 if (typeof lucide !== 'undefined') lucide.createIcons();
             };
 
-            const handleAddTradeSubmit = (event) => {
+            const handleAddTradeSubmit = async (event) => {
                 event.preventDefault();
                 const form = event.target;
+                const submitBtn = form.querySelector('button[type="submit"]');
+                const originalBtnText = submitBtn.innerHTML;
+                
                 const formData = new FormData(form);
                 document.querySelectorAll('.error-message').forEach(el => el.textContent = '');
                 
@@ -890,6 +938,8 @@
                     strategy: formData.get('strategy'),
                     htfLink: formData.get('htfLink') || '',
                     ltfLink: formData.get('ltfLink') || '',
+                    tradeNumber: (allTrades.length + 1).toString(), // Calculate trade number
+                    id: new Date().getTime() // Generate ID
                 };
                 
                 let isValid = true;
@@ -899,40 +949,27 @@
 
                 if (!isValid) return;
 
-                const netPnl = tradeData.pnl;
-                const entryDateObj = new Date(tradeData.entryDate + 'T00:00:00'); 
-                const tradeNumber = allTrades.length + 1;
+                // Loading state
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 mr-2 animate-spin"></i> Saving...`;
+                lucide.createIcons();
 
-                const newTrade = {
-                    id: tradeNumber,
-                    tradeNumber: tradeNumber.toString(),
-                    entryDate: tradeData.entryDate,
-                    symbol: tradeData.symbol,
-                    pnl: tradeData.pnl,
-                    fees: 0,
-                    strategy: tradeData.strategy, 
-                    netPnl: netPnl,
-                    month: monthNames[entryDateObj.getUTCMonth()],
-                    year: entryDateObj.getUTCFullYear().toString(),
-                    htfLink: tradeData.htfLink,
-                    ltfLink: tradeData.ltfLink
-                };
-
-                allTrades.push(newTrade);
-                
-                const { year, month, strategy } = newTrade;
-                if (!allOptions.years.includes(year)) { allOptions.years.push(year); allOptions.years.sort(); }
-                if (!allOptions.months.includes(month)) { allOptions.months.push(month); allOptions.months = sortMonths(allOptions.months); }
-                if (!allOptions.strategies.includes(strategy)) { allOptions.strategies.push(strategy); allOptions.strategies.sort(); }
-                
-                currentFilters.years.add(year);
-                currentFilters.months.add(month);
-                currentFilters.strategies.add(strategy);
-                applyFilters(); 
-                
-                form.reset();
-                showMessageBox('Trade Added Successfully', `Trade #${tradeNumber} for ${tradeData.symbol} recorded with Net P&L of $${netPnl.toFixed(2)}.`);
-                window.app.switchPage('Overview');
+                try {
+                    // Send to Google Sheets
+                    await saveTradeToSheet(tradeData);
+                    
+                    // Refresh local data
+                    await initializeData();
+                    
+                    form.reset();
+                    showMessageBox('Trade Added Successfully', `Trade recorded. Dashboard has been updated.`);
+                    window.app.switchPage('Overview');
+                } catch (error) {
+                    showMessageBox('Error', 'Failed to save trade to Google Sheets. Please try again.');
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalBtnText;
+                }
             };
 
             const renderAddTradePage = () => {
@@ -992,28 +1029,7 @@
             }
 
             const deleteTrade = (tradeId) => {
-                if (!confirm('Are you sure you want to delete this trade?')) return;
-                
-                const tradeIndex = allTrades.findIndex(trade => trade.id === tradeId);
-                if (tradeIndex === -1) return;
-                
-                allTrades.splice(tradeIndex, 1);
-                
-                for (let i = tradeIndex; i < allTrades.length; i++) {
-                    allTrades[i].id = i + 1;
-                    allTrades[i].tradeNumber = (i + 1).toString();
-                }
-                
-                const uniqueYears = [...new Set(allTrades.map(t => t.year))].sort();
-                const uniqueMonths = sortMonths([...new Set(allTrades.map(t => t.month))]);
-                const csvStrategies = [...new Set(allTrades.map(t => t.strategy))];
-                const uniqueStrategies = [...new Set([...FIXED_STRATEGIES, ...csvStrategies])].sort();
-                
-                allOptions = { years: uniqueYears, months: uniqueMonths, strategies: uniqueStrategies };
-                
-                applyFilters();
-                
-                showMessageBox('Trade Deleted', `Trade #${tradeId} has been deleted and all subsequent trades have been renumbered.`);
+               alert("For security reasons, please delete rows directly in your Google Sheet. The dashboard will update on refresh.");
             };
 
             const switchPage = (pageName) => {
@@ -1037,21 +1053,24 @@
                 if (typeof lucide !== 'undefined') lucide.createIcons();
             }
             
-            // Pagination functions
             const changePage = (page) => {
                 if (page < 1 || page > Math.ceil(filteredTrades.length / tradesPerPage)) return;
                 currentPageNumber = page;
                 renderTradesTable(filteredTrades);
             };
             
-            // Sorting functions
             const handleSortOrderChange = (newOrder) => {
                 sortOrder = newOrder;
                 renderTradesTable(filteredTrades);
             };
 
-            const initializeData = () => {
-                allTrades = simpleParseCSV(CSV_DATA);
+            const initializeData = async () => {
+                contentContainer.innerHTML = '';
+                loadingState.classList.remove('hidden');
+
+                allTrades = await fetchTradesFromSheet();
+                
+                loadingState.classList.add('hidden');
                 
                 const uniqueYears = [...new Set(allTrades.map(t => t.year))].sort();
                 const uniqueMonths = sortMonths([...new Set(allTrades.map(t => t.month))]);
