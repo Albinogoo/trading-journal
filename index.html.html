@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Journal Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            if (typeof lucide !== 'undefined' && lucide.createIcons) {
+                lucide.createIcons();
+            }
+        });
+    </script>
+    <style>
+        .pnl-win { color: #10B981; font-weight: 600; }
+        .pnl-loss { color: #EF4444; font-weight: 600; }
+        .tab-active {
+            border-bottom: 3px solid #3b82f6;
+            color: #1f2937;
+            font-weight: 600;
+        }
+        .dropdown-content {
+            display: none;
+        }
+        .dropdown-content.active {
+            display: block;
+        }
+        #equity-curve-chart, #strategy-performance-chart, #daily-performance-chart {
+            max-height: 100%;
+        }
+        .error-message {
+            color: #EF4444;
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 p-6 sm:p-10 font-sans">
+    <div id="app" class="max-w-7xl mx-auto">
+        <header class="mb-6">
+            <h1 class="text-4xl font-extrabold text-gray-900 flex items-center">
+                <i data-lucide="line-chart" class="w-8 h-8 mr-3 text-blue-600"></i>
+                Trading Performance Journal
+            </h1>
+            <p class="text-gray-500 mt-1">Navigate your data and analyze performance across different views.</p>
+        </header>
+
+        <nav class="border-b border-gray-200 mb-8 sticky top-0 bg-gray-50 z-20">
+            <div class="flex space-x-4">
+                <button id="tab-overview" onclick="window.app.switchPage('Overview')" class="py-3 px-4 text-gray-500 hover:text-gray-800 transition-colors duration-150 flex items-center tab-active">
+                    <i data-lucide="layout-dashboard" class="w-5 h-5 mr-2"></i> Overview
+                </button>
+                <button id="tab-calendar" onclick="window.app.switchPage('Calendar')" class="py-3 px-4 text-gray-500 hover:text-gray-800 transition-colors duration-150 flex items-center">
+                    <i data-lucide="calendar" class="w-5 h-5 mr-2"></i> Calendar
+                </button>
+                <button id="tab-add-trade" onclick="window.app.switchPage('Add Trade')" class="py-3 px-4 text-gray-500 hover:text-gray-800 transition-colors duration-150 flex items-center">
+                    <i data-lucide="plus-square" class="w-5 h-5 mr-2"></i> Add Trade
+                </button>
+            </div>
+        </nav>
+
+        <div id="content-container"></div>
+        
+        <div id="custom-message-box" class="fixed inset-0 bg-gray-900 bg-opacity-50 hidden items-center justify-center z-50">
+            <div class="bg-white p-8 rounded-xl shadow-2xl max-w-sm w-full transform transition-all duration-300 scale-95 opacity-0" id="message-content-wrapper">
+                <h3 id="message-title" class="text-xl font-bold mb-4 text-gray-800"></h3>
+                <p id="message-text" class="text-gray-600 mb-6"></p>
+                <button onclick="window.app.closeMessageBox()" class="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors font-semibold">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            const CSV_DATA = `,,,Entry Date,Exit Date,Symbol,Long or Short,P&L,Fees,Strategy,Comments,Screenshot,Net P&L,% P&L,Account Balance,Result Gross,Result Net,Days Difference,Trade Number,Intraday or Multiday,Day of the week,Status,Month,Year,Day,,,,,,,,,,,,\n`;
+            
+            let allTrades = [];
+            let filteredTrades = []; 
+            let currentFilters = {
+                years: new Set(),
+                months: new Set(),
+                strategies: new Set(),
+            };
+            let allOptions = {
+                years: [],
+                months: [],
+                strategies: []
+            };
+            let activeDropdown = null;
+            let currentPage = 'Overview'; 
+            let currentCalendarDate = new Date(); 
+            
+            let equityChart = null;
+            let strategyChart = null;
+            let dailyChart = null;
+            
+            // Pagination and sorting variables
+            let currentPageNumber = 1;
+            let tradesPerPage = 20;
+            let sortOrder = 'desc'; // 'asc' for oldest first, 'desc' for newest first
+
+            const contentContainer = document.getElementById('content-container');
+            const tabButtons = {
+                'Overview': document.getElementById('tab-overview'),
+                'Calendar': document.getElementById('tab-calendar'),
+                'Add Trade': document.getElementById('tab-add-trade'),
+            };
+            const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            const FIXED_STRATEGIES = ['FVG', 'Liquidity Sweep', 'FVG + LS', 'Plan Not Followed'];
+
+            const showMessageBox = (title, message) => {
+                const box = document.getElementById('custom-message-box');
+                const titleEl = document.getElementById('message-title');
+                const textEl = document.getElementById('message-text');
+                const contentWrapper = document.getElementById('message-content-wrapper');
+
+                titleEl.textContent = title;
+                textEl.textContent = message;
+
+                box.classList.remove('hidden');
+                box.classList.add('flex');
+                
+                setTimeout(() => {
+                    contentWrapper.classList.remove('scale-95', 'opacity-0');
+                    contentWrapper.classList.add('scale-100', 'opacity-100');
+                }, 10); 
+            };
+            
+            const closeMessageBox = () => {
+                const box = document.getElementById('custom-message-box');
+                const contentWrapper = document.getElementById('message-content-wrapper');
+
+                contentWrapper.classList.remove('scale-100', 'opacity-100');
+                contentWrapper.classList.add('scale-95', 'opacity-0');
+
+                setTimeout(() => {
+                    box.classList.add('hidden');
+                    box.classList.remove('flex');
+                }, 300); 
+            };
+
+            const simpleParseCSV = (csvText) => {
+                const rows = csvText.trim().split('\n').filter(r => r.trim() !== '');
+                if (rows.length < 2) return []; 
+
+                const trades = rows.slice(1).map((row, index) => {
+                    if (row.includes('Entry Date')) return null;
+
+                    const columns = row.split(',');
+                    if (columns.length < 23) return null; 
+
+                    const parseNum = (val) => {
+                        const num = parseFloat(val);
+                        return isNaN(num) ? 0 : num;
+                    };
+
+                    const pnl = parseNum(columns[7]);
+                    const fees = parseNum(columns[8]);
+                    const netPnl = parseNum(columns[12]);
+                    const entryDateVal = columns[3];
+                    
+                    if (!entryDateVal) return null;
+
+                    return {
+                        id: index + 1,
+                        tradeNumber: columns[16] || (index + 1).toString(), 
+                        entryDate: entryDateVal, 
+                        symbol: columns[5] || 'N/A',
+                        pnl: pnl,
+                        fees: fees,
+                        strategy: columns[9] || 'Uncategorized', 
+                        netPnl: netPnl,
+                        month: columns[21] || 'N/A',
+                        year: columns[22] || 'N/A',
+                        htfLink: '', 
+                        ltfLink: ''  
+                    };
+                }).filter(t => t !== null); 
+
+                return trades;
+            };
+
+            const calculateStats = (trades) => {
+                if (!trades.length) {
+                    return { totalNetPnl: 0, totalGrossPnl: 0, totalTrades: 0, winRate: 0, avgWin: 0, avgLoss: 0, profitFactor: 0, longestWinStreak: 0, longestLossStreak: 0 };
+                }
+
+                const totalNetPnl = trades.reduce((sum, trade) => sum + trade.netPnl, 0);
+                const totalGrossPnl = trades.reduce((sum, trade) => sum + trade.pnl, 0);
+                
+                const wins = trades.filter(t => t.netPnl > 0);
+                const losses = trades.filter(t => t.netPnl < 0);
+                
+                const grossProfit = wins.reduce((sum, trade) => sum + trade.netPnl, 0);
+                const grossLoss = losses.reduce((sum, trade) => sum + Math.abs(trade.netPnl), 0);
+                
+                const profitFactor = grossLoss > 0 ? (grossProfit / grossLoss).toFixed(2) : (grossProfit > 0 ? 'Inf' : '0.00');
+
+                const totalTrades = trades.length;
+                const winRate = totalTrades > 0 ? ((wins.length / totalTrades) * 100).toFixed(1) : 0;
+                
+                const avgWin = wins.length > 0 ? (grossProfit / wins.length).toFixed(2) : 0;
+                const avgLoss = losses.length > 0 ? -(grossLoss / losses.length).toFixed(2) : 0; 
+                
+                let currentWinStreak = 0, currentLossStreak = 0, longestWinStreak = 0, longestLossStreak = 0;
+                trades.forEach(trade => {
+                    if (trade.netPnl > 0) {
+                        currentWinStreak++; currentLossStreak = 0;
+                    } else if (trade.netPnl < 0) {
+                        currentLossStreak++; currentWinStreak = 0;
+                    } else {
+                        currentWinStreak = 0; currentLossStreak = 0;
+                    }
+                    if (currentWinStreak > longestWinStreak) longestWinStreak = currentWinStreak;
+                    if (currentLossStreak > longestLossStreak) longestLossStreak = currentLossStreak;
+                });
+
+                return {
+                    totalNetPnl: totalNetPnl.toFixed(2),
+                    totalGrossPnl: totalGrossPnl.toFixed(2),
+                    totalTrades,
+                    winRate: winRate,
+                    avgWin: avgWin,
+                    avgLoss: avgLoss,
+                    profitFactor: profitFactor,
+                    longestWinStreak,
+                    longestLossStreak
+                };
+            };
+            
+            const getDayOfWeekStats = (trades) => {
+                const days = { 'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0 };
+                trades.forEach(trade => {
+                    if(!trade.entryDate) return;
+                    const date = new Date(trade.entryDate + 'T00:00:00');
+                    const dayIndex = date.getDay();
+                    const dayMap = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                    const dayName = dayMap[dayIndex];
+                    if (days.hasOwnProperty(dayName)) {
+                        days[dayName] += trade.netPnl;
+                    }
+                });
+                return days;
+            };
+
+            const getEquityCurveData = (trades) => {
+                const sortedTrades = [...trades].sort((a, b) => new Date(a.entryDate) - new Date(b.entryDate));
+                let cumulativePnl = 0;
+                const labels = [];
+                const data = [];
+                sortedTrades.forEach(trade => {
+                    cumulativePnl += trade.netPnl;
+                    labels.push(trade.entryDate);
+                    data.push(cumulativePnl.toFixed(2));
+                });
+                return { labels, data };
+            };
+            
+            const getStrategyPerformance = (trades) => {
+                const strategyMap = {};
+                trades.forEach(trade => {
+                    const strategy = trade.strategy;
+                    if (!strategyMap[strategy]) strategyMap[strategy] = { netPnl: 0, count: 0 };
+                    strategyMap[strategy].netPnl += trade.netPnl;
+                    strategyMap[strategy].count++;
+                });
+                const labels = Object.keys(strategyMap);
+                const data = labels.map(label => strategyMap[label].netPnl.toFixed(2));
+                const counts = labels.map(label => strategyMap[label].count);
+                const colors = data.map(pnl => pnl >= 0 ? '#10B981' : '#EF4444'); 
+                return { labels, data, counts, colors };
+            };
+
+            const sortMonths = (months) => {
+                const monthOrder = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                return months.sort((a, b) => monthOrder.indexOf(a) - monthOrder.indexOf(b));
+            };
+            
+            const getDailyPnlAndCount = (trades) => {
+                const dailyData = {};
+                trades.forEach(trade => {
+                    const dateKey = trade.entryDate; 
+                    if (!dailyData[dateKey]) dailyData[dateKey] = { pnl: 0, count: 0 };
+                    dailyData[dateKey].pnl += trade.netPnl;
+                    dailyData[dateKey].count++;
+                });
+                return dailyData;
+            };
+
+            const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+            const getFirstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+            
+            const renderStats = (stats) => {
+                const statsContainer = document.getElementById('stats-section');
+                if (!statsContainer) return;
+
+                const showDollar = (title) => {
+                    const nonDollarMetrics = ['Trade', 'Rate', 'Factor', 'Streak'];
+                    return !nonDollarMetrics.some(keyword => title.includes(keyword));
+                };
+
+                const StatCard = (title, value, iconName, color) => `
+                    <div class="flex flex-col items-start p-4 bg-white rounded-xl shadow-lg border border-gray-100 transition-all duration-300 hover:shadow-xl">
+                        <div class="p-3 rounded-full bg-opacity-10 mb-2 ${color.replace('text-', 'bg-')}/10">
+                            <i data-lucide="${iconName}" class="w-6 h-6 ${color}"></i>
+                        </div>
+                        <p class="text-3xl font-extrabold text-gray-900">${showDollar(title) ? '$' + value : value}</p>
+                        <h3 class="text-sm font-medium text-gray-500">${title}</h3>
+                    </div>
+                `;
+                
+                let statsHtml = `
+                    ${StatCard("Total Net P&L", stats.totalNetPnl, "dollar-sign", "text-green-600")}
+                    ${StatCard("Total Trades", stats.totalTrades, "line-chart", "text-indigo-600")}
+                    ${StatCard("Win Rate", stats.winRate + '%', "trending-up", "text-purple-600")}
+                    ${StatCard("Profit Factor", stats.profitFactor, "check-square", "text-orange-600")}
+                    ${StatCard("Average Win", stats.avgWin, "dollar-sign", "text-blue-600")}
+                    ${StatCard("Average Loss", stats.avgLoss, "dollar-sign", "text-red-600")}
+                    ${StatCard("Longest Win Streak", stats.longestWinStreak, "zap", "text-lime-600")}
+                    ${StatCard("Longest Loss Streak", stats.longestLossStreak, "skull", "text-stone-600")}
+                `;
+
+                statsContainer.innerHTML = statsHtml;
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            };
+            
+            const renderDailyPerformanceChart = (trades) => {
+                const ctx = document.getElementById('daily-performance-chart');
+                if (!ctx) return;
+                
+                if (dailyChart) dailyChart.destroy();
+                
+                const dayStats = getDayOfWeekStats(trades);
+                const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+                const data = labels.map(day => dayStats[day]);
+                const backgroundColors = data.map(val => val >= 0 ? '#10B981' : '#EF4444'); 
+
+                dailyChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Net P&L',
+                            data: data,
+                            backgroundColor: backgroundColors,
+                            borderRadius: 4,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        let label = context.dataset.label || '';
+                                        if (label) label += ': ';
+                                        if (context.parsed.y !== null) {
+                                            label += new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(context.parsed.y);
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: { beginAtZero: true, grid: { color: '#f3f4f6' } },
+                            x: { grid: { display: false } }
+                        }
+                    }
+                });
+            };
+            
+            // Sort trades based on current sort order
+            const sortTrades = (trades) => {
+                return [...trades].sort((a, b) => {
+                    const aDate = new Date(a.entryDate);
+                    const bDate = new Date(b.entryDate);
+                    
+                    if (sortOrder === 'asc') {
+                        return aDate - bDate; // Oldest first
+                    } else {
+                        return bDate - aDate; // Newest first
+                    }
+                });
+            };
+            
+            // Get paginated trades
+            const getPaginatedTrades = (trades) => {
+                const sortedTrades = sortTrades(trades);
+                const startIndex = (currentPageNumber - 1) * tradesPerPage;
+                const endIndex = startIndex + tradesPerPage;
+                return sortedTrades.slice(startIndex, endIndex);
+            };
+            
+            // Render pagination controls
+            const renderPagination = (totalTrades) => {
+                const totalPages = Math.ceil(totalTrades / tradesPerPage);
+                if (totalPages <= 1) return '';
+                
+                let paginationHtml = `
+                    <div class="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-b-xl">
+                        <div class="flex flex-1 justify-between sm:hidden">
+                            <button onclick="window.app.changePage(${currentPageNumber - 1})" ${currentPageNumber === 1 ? 'disabled' : ''} class="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 ${currentPageNumber === 1 ? 'opacity-50 cursor-not-allowed' : ''}">Previous</button>
+                            <button onclick="window.app.changePage(${currentPageNumber + 1})" ${currentPageNumber === totalPages ? 'disabled' : ''} class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 ${currentPageNumber === totalPages ? 'opacity-50 cursor-not-allowed' : ''}">Next</button>
+                        </div>
+                        <div class="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+                            <div>
+                                <p class="text-sm text-gray-700">
+                                    Showing <span class="font-medium">${((currentPageNumber - 1) * tradesPerPage) + 1}</span> to <span class="font-medium">${Math.min(currentPageNumber * tradesPerPage, totalTrades)}</span> of <span class="font-medium">${totalTrades}</span> results
+                                </p>
+                            </div>
+                            <div>
+                                <nav class="isolate inline-flex -space-x-px rounded-md shadow-sm" aria-label="Pagination">
+                `;
+                
+                // Previous button
+                paginationHtml += `
+                    <button onclick="window.app.changePage(${currentPageNumber - 1})" ${currentPageNumber === 1 ? 'disabled' : ''} class="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 ${currentPageNumber === 1 ? 'opacity-50 cursor-not-allowed' : ''}">
+                        <span class="sr-only">Previous</span>
+                        <i data-lucide="chevron-left" class="w-5 h-5"></i>
+                    </button>
+                `;
+                
+                // Page numbers
+                for (let i = 1; i <= totalPages; i++) {
+                    if (i === 1 || i === totalPages || (i >= currentPageNumber - 1 && i <= currentPageNumber + 1)) {
+                        paginationHtml += `
+                            <button onclick="window.app.changePage(${i})" aria-current="${i === currentPageNumber ? 'page' : 'false'}" class="relative inline-flex items-center px-4 py-2 text-sm font-semibold ${i === currentPageNumber ? 'bg-blue-600 text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600' : 'text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0'}">${i}</button>
+                        `;
+                    } else if (i === currentPageNumber - 2 || i === currentPageNumber + 2) {
+                        paginationHtml += `<span class="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-700 ring-1 ring-inset ring-gray-300 focus:outline-offset-0">...</span>`;
+                    }
+                }
+                
+                // Next button
+                paginationHtml += `
+                    <button onclick="window.app.changePage(${currentPageNumber + 1})" ${currentPageNumber === totalPages ? 'disabled' : ''} class="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0 ${currentPageNumber === totalPages ? 'opacity-50 cursor-not-allowed' : ''}">
+                        <span class="sr-only">Next</span>
+                        <i data-lucide="chevron-right" class="w-5 h-5"></i>
+                    </button>
+                `;
+                
+                paginationHtml += `
+                                </nav>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                return paginationHtml;
+            };
+            
+            const renderTradesTable = (trades) => {
+                const tableBody = document.getElementById('trades-table-body');
+                const filteredCount = document.getElementById('filtered-count');
+                const totalCount = document.getElementById('total-count');
+                const paginationContainer = document.getElementById('pagination-container');
+
+                if (!tableBody || !filteredCount || !totalCount || !paginationContainer) return;
+                totalCount.textContent = allTrades.length;
+                filteredCount.textContent = trades.length;
+
+                if (trades.length === 0) {
+                    tableBody.innerHTML = `<tr><td colspan="8" class="px-6 py-10 text-center text-gray-500 text-lg">No trades recorded matching the filters.</td></tr>`;
+                    paginationContainer.innerHTML = '';
+                    return;
+                }
+
+                const paginatedTrades = getPaginatedTrades(trades);
+                
+                tableBody.innerHTML = paginatedTrades.map(trade => {
+                    const pnlClass = trade.pnl >= 0 ? 'pnl-win' : 'pnl-loss';
+                    const htfBtn = trade.htfLink ? `<a href="${trade.htfLink}" target="_blank" class="text-blue-600 hover:text-blue-800" title="Open HTF Chart"><i data-lucide="external-link" class="w-4 h-4"></i></a>` : '<span class="text-gray-300">-</span>';
+                    const ltfBtn = trade.ltfLink ? `<a href="${trade.ltfLink}" target="_blank" class="text-blue-600 hover:text-blue-800" title="Open LTF Chart"><i data-lucide="external-link" class="w-4 h-4"></i></a>` : '<span class="text-gray-300">-</span>';
+
+                    return `
+                        <tr class="hover:bg-gray-50 transition-colors">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${trade.tradeNumber}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${trade.entryDate}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-indigo-600 font-semibold">${trade.symbol}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">${trade.strategy}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm ${pnlClass}">$${trade.pnl.toFixed(2)}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-center">${htfBtn}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-center">${ltfBtn}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
+                                <button onclick="window.app.deleteTrade(${trade.id})" class="text-red-600 hover:text-red-800 transition-colors" title="Delete Trade">
+                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+                
+                paginationContainer.innerHTML = renderPagination(trades.length);
+                
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            };
+
+            const renderFilterButtons = () => {
+                const container = document.getElementById('filter-buttons-container');
+                if (!container) return;
+                
+                if (activeDropdown) {
+                    const activeContent = document.getElementById(`dropdown-content-${activeDropdown}`);
+                    if(activeContent) activeContent.classList.remove('active');
+                    activeDropdown = null;
+                }
+
+                const filterData = [
+                    { type: 'years', label: 'Filter by Year', icon: 'calendar', options: allOptions.years },
+                    { type: 'months', label: 'Filter by Month', icon: 'calendar-days', options: allOptions.months },
+                    { type: 'strategies', label: 'Filter by Strategy', icon: 'git-fork', options: allOptions.strategies },
+                ];
+
+                container.innerHTML = filterData.map(({ type, label, icon, options }) => {
+                    const currentActive = currentFilters[type];
+                    const isFiltered = currentActive.size > 0 && currentActive.size < options.length;
+                    const badge = isFiltered ? `<span class="ml-2 px-2 py-0.5 text-xs font-semibold bg-white text-blue-600 rounded-full">${options.length - currentActive.size} removed</span>` : '';
+                    const buttonClasses = isFiltered
+                        ? 'bg-blue-600 text-white border-blue-700 hover:bg-blue-700'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50';
+
+                    const dropdownOptions = options.map((option) => `
+                        <div class="flex items-center p-2 rounded-lg cursor-pointer hover:bg-blue-50 transition-colors" onclick="window.app.handleToggleFilter('${type}', '${option}')">
+                            <input type="checkbox" ${currentActive.has(option) ? 'checked' : ''} class="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 pointer-events-none" />
+                            <label class="ml-3 text-sm font-medium text-gray-700">${option}</label>
+                        </div>
+                    `).join('');
+                    const isAllSelected = currentActive.size === allOptions[type].length || currentActive.size === 0;
+                    return `
+                        <div class="relative inline-block text-left z-10">
+                            <button id="filter-btn-${type}" onclick="window.app.toggleDropdown('${type}')" class="inline-flex justify-center items-center w-full rounded-xl border px-4 py-2 text-sm font-medium transition-colors duration-200 shadow-md ${buttonClasses}">
+                                <i data-lucide="${icon}" class="w-4 h-4 mr-2"></i>${label}${badge}
+                                <i data-lucide="chevron-down" id="chevron-${type}" class="w-4 h-4 ml-2 transition-transform"></i>
+                            </button>
+                            <div id="dropdown-content-${type}" class="dropdown-content absolute right-0 mt-2 w-64 origin-top-right bg-white border border-gray-200 rounded-xl shadow-2xl ring-1 ring-black ring-opacity-5 focus:outline-none p-2" onmouseleave="window.app.toggleDropdown(null)">
+                                <div class="flex justify-between items-center p-2 border-b">
+                                    <span class="text-sm font-semibold text-gray-700">${label}</span>
+                                    <button onclick="window.app.handleSelectAllOrClear('${type}', ${isAllSelected})" class="text-xs text-blue-600 hover:text-blue-800 font-medium">${isAllSelected ? 'Clear All' : 'Select All'}</button>
+                                </div>
+                                <div class="max-h-60 overflow-y-auto mt-1">${dropdownOptions}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                const totalSelectedCount = (currentFilters.years.size > 0 && currentFilters.years.size < allOptions.years.length ? 1 : 0) + (currentFilters.months.size > 0 && currentFilters.months.size < allOptions.months.length ? 1 : 0) + (currentFilters.strategies.size > 0 && currentFilters.strategies.size < allOptions.strategies.length ? 1 : 0);
+                if (totalSelectedCount > 0) {
+                    const clearBtnHtml = `<button onclick="window.app.handleClearAllFilters()" class="inline-flex justify-center items-center rounded-xl border px-4 py-2 text-sm font-medium bg-red-100 text-red-600 border-red-300 hover:bg-red-200 shadow-md transition-colors duration-200"><i data-lucide="x" class="w-4 h-4 mr-2"></i>Clear ${totalSelectedCount} Active Filter${totalSelectedCount > 1 ? 's' : ''}</button>`;
+                    container.insertAdjacentHTML('beforeend', clearBtnHtml);
+                }
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            };
+
+            const applyFilters = () => {
+                const newFilteredTrades = allTrades.filter(trade => {
+                    const yearMatch = currentFilters.years.size === 0 || currentFilters.years.has(trade.year);
+                    const monthMatch = currentFilters.months.size === 0 || currentFilters.months.has(trade.month);
+                    const strategyMatch = currentFilters.strategies.size === 0 || currentFilters.strategies.has(trade.strategy);
+                    return yearMatch && monthMatch && strategyMatch;
+                });
+                filteredTrades = newFilteredTrades;
+                // Reset to first page when filters change
+                currentPageNumber = 1;
+                if (currentPage === 'Overview') {
+                    renderOverviewContent();
+                } else if (currentPage === 'Calendar') renderCalendarPage();
+            };
+
+            const renderEquityCurveChart = () => {
+                const chartData = getEquityCurveData(filteredTrades);
+                const ctx = document.getElementById('equity-curve-chart');
+                if (!ctx) return;
+                if (equityChart) equityChart.destroy();
+                equityChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: chartData.labels,
+                        datasets: [{
+                            label: 'Cumulative Net P&L',
+                            data: chartData.data,
+                            borderColor: '#3B82F6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.1,
+                            pointRadius: 0,
+                            fill: true,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+                        scales: { x: { title: { display: true, text: 'Trade Date' }, ticks: { maxTicksLimit: 10 } }, y: { title: { display: true, text: 'Net P&L ($)' } } }
+                    }
+                });
+            };
+            
+            const renderStrategyPerformanceChart = () => {
+                const chartData = getStrategyPerformance(filteredTrades);
+                const ctx = document.getElementById('strategy-performance-chart');
+                if (!ctx) return;
+                if (strategyChart) strategyChart.destroy();
+                strategyChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: chartData.labels,
+                        datasets: [{
+                            label: 'Net P&L by Strategy',
+                            data: chartData.data,
+                            backgroundColor: chartData.colors,
+                            borderColor: chartData.colors.map(c => c.replace('#', '') + 'AA'),
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false }, tooltip: { callbacks: { afterLabel: function(context) { const index = context.dataIndex; const count = chartData.counts[index]; return `Trades: ${count}`; } } } },
+                        scales: { x: { title: { display: true, text: 'Strategy' } }, y: { title: { display: true, text: 'Net P&L ($)' } } }
+                    }
+                });
+            };
+
+            const renderOverviewContent = () => {
+                const stats = calculateStats(filteredTrades);
+                const overviewContent = `
+                    <section id="filter-section" class="bg-white p-6 rounded-2xl shadow-xl mb-10 border border-blue-200">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><i data-lucide="sliders" class="w-5 h-5 mr-2"></i> Apply Filters</h2>
+                        <div id="filter-buttons-container" class="flex flex-wrap gap-4 relative"></div>
+                    </section>
+
+                    <section id="stats-section" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-4 gap-6 mb-10"></section>
+                    
+                    ${filteredTrades.length === 0 ? `
+                        <div class="p-10 bg-white rounded-2xl shadow-xl border border-gray-200 min-h-[400px] flex items-center justify-center">
+                            <p class="text-xl text-gray-500 font-semibold">No trades selected. Please adjust your filters to view performance metrics.</p>
+                        </div>
+                    ` : `
+                        <section class="mb-10">
+                            <div class="bg-white p-6 rounded-2xl shadow-xl border border-gray-200 h-96">
+                                <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><i data-lucide="trending-up" class="w-5 h-5 mr-2 text-blue-600"></i>Equity Curve (Cumulative Net P&L)</h2>
+                                <div class="h-full"><canvas id="equity-curve-chart" class="w-full h-full"></canvas></div>
+                            </div>
+                        </section>
+
+                        <section class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-10">
+                            <div class="bg-white p-6 rounded-2xl shadow-xl border border-gray-200 h-96">
+                                <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><i data-lucide="bar-chart-2" class="w-5 h-5 mr-2 text-purple-600"></i>P&L by Strategy</h2>
+                                <div class="h-full"><canvas id="strategy-performance-chart" class="w-full h-full"></canvas></div>
+                            </div>
+                            <div class="bg-white p-6 rounded-2xl shadow-xl border border-gray-200 h-96">
+                                <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center"><i data-lucide="calendar-days" class="w-5 h-5 mr-2 text-indigo-600"></i>Daily Performance (Mon-Fri)</h2>
+                                <div class="h-full"><canvas id="daily-performance-chart" class="w-full h-full"></canvas></div>
+                            </div>
+                        </section>
+
+                        <section class="bg-white rounded-2xl shadow-xl overflow-hidden">
+                            <div class="p-6 border-b border-gray-200">
+                                <h2 class="text-xl font-bold text-gray-800">Filtered Trades (<span id="filtered-count">0</span> / <span id="total-count">0</span>)</h2>
+                                <div class="mt-2 flex items-center space-x-4">
+                                    <div class="flex items-center space-x-2">
+                                        <span class="text-sm text-gray-600">Sort order:</span>
+                                        <select onchange="window.app.handleSortOrderChange(this.value)" class="text-sm border border-gray-300 rounded-lg px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                            <option value="desc" ${sortOrder === 'desc' ? 'selected' : ''}>Latest First</option>
+                                            <option value="asc" ${sortOrder === 'asc' ? 'selected' : ''}>Oldest First</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="overflow-x-auto">
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entry Date</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Strategy</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
+                                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">HTF</th>
+                                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">LTF</th>
+                                            <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Delete</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="trades-table-body" class="bg-white divide-y divide-gray-100"></tbody>
+                                </table>
+                            </div>
+                            <div id="pagination-container"></div>
+                        </section>
+                    `}
+                `;
+                contentContainer.innerHTML = overviewContent;
+                
+                renderFilterButtons();
+                renderStats(stats);
+                
+                if (filteredTrades.length > 0) {
+                    renderEquityCurveChart();
+                    renderStrategyPerformanceChart();
+                    renderDailyPerformanceChart(filteredTrades);
+                    renderTradesTable(filteredTrades);
+                }
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+            
+            const changeCalendarMonth = (delta) => {
+                const newDate = new Date(currentCalendarDate.getTime());
+                newDate.setMonth(newDate.getMonth() + delta);
+                currentCalendarDate = newDate;
+                renderCalendarPage(); 
+            };
+            
+            const renderCalendarPage = () => {
+                const year = currentCalendarDate.getFullYear();
+                const month = currentCalendarDate.getMonth(); 
+                const today = new Date();
+                const currentYear = year.toString();
+                const currentMonthAbbr = monthNames[month];
+                const tradesInThisMonth = filteredTrades.filter(trade => trade.year === currentYear && trade.month === currentMonthAbbr);
+                const isFilteredOut = tradesInThisMonth.length === 0 && filteredTrades.length > 0;
+                const daysInMonth = getDaysInMonth(year, month);
+                const firstDayIndex = (getFirstDayOfMonth(year, month) + 6) % 7; 
+                const dailyData = getDailyPnlAndCount(filteredTrades);
+                
+                // Calculate monthly P&L
+                const monthlyPnl = tradesInThisMonth.reduce((sum, trade) => sum + trade.netPnl, 0);
+                const monthlyPnlClass = monthlyPnl >= 0 ? 'text-green-600' : 'text-red-600';
+                const monthlyPnlSign = monthlyPnl >= 0 ? '+' : '';
+                
+                // Build calendar weeks
+                const weeks = [];
+                let currentWeek = Array(6).fill(null); // 6 columns: Mon, Tue, Wed, Thu, Fri, Week Total
+                
+                // Fill empty cells before first day
+                for (let i = 0; i < firstDayIndex; i++) {
+                    currentWeek[i] = { type: 'empty' };
+                }
+
+                let weekTotal = 0;
+                let weekDaysCount = 0;
+
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    const dateObj = new Date(dateStr);
+                    const dayOfWeek = dateObj.getDay();
+                    
+                    // Skip weekends (0=Sunday, 6=Saturday)
+                    if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+                    
+                    const dayIndex = dayOfWeek - 1; // Convert to 0-4 (Mon-Fri)
+                    const dayData = dailyData[dateStr];
+                    
+                    // Add day to current week
+                    currentWeek[dayIndex] = {
+                        type: 'day',
+                        day: day,
+                        dayData: dayData,
+                        isToday: year === today.getFullYear() && month === today.getMonth() && day === today.getDate()
+                    };
+                    
+                    // Add to week total
+                    if (dayData) {
+                        weekTotal += dayData.pnl;
+                        weekDaysCount++;
+                    }
+
+                    // If it's Friday or last day of month, complete the week
+                    if (dayOfWeek === 5 || day === daysInMonth) {
+                        // Add week total to the 6th column
+                        currentWeek[5] = {
+                            type: 'week-total',
+                            total: weekTotal
+                        };
+                        
+                        weeks.push([...currentWeek]);
+                        
+                        // Reset for next week
+                        currentWeek = Array(6).fill(null);
+                        weekTotal = 0;
+                        weekDaysCount = 0;
+                    }
+                }
+
+                // Build calendar HTML
+                let calendarHtml = '';
+                
+                weeks.forEach(week => {
+                    calendarHtml += '<div class="grid grid-cols-6">';
+                    
+                    week.forEach((item, columnIndex) => {
+                        if (!item || item.type === 'empty') {
+                            calendarHtml += `<div class="p-2 border-r border-b border-gray-100 bg-gray-50/50 text-gray-400 h-28"></div>`;
+                        } else if (item.type === 'day') {
+                            let pnlHtml = '';
+                            let dayClasses = 'p-2 border-r border-b h-28 flex flex-col justify-between transition-colors';
+                            
+                            // Set background color based on P&L
+                            if (item.dayData) {
+                                const pnlVal = isNaN(item.dayData.pnl) ? 0 : item.dayData.pnl;
+                                if (pnlVal > 0) {
+                                    dayClasses += ' bg-green-50 hover:bg-green-100 cursor-default border-green-200';
+                                } else if (pnlVal < 0) {
+                                    dayClasses += ' bg-red-50 hover:bg-red-100 cursor-default border-red-200';
+                                } else {
+                                    dayClasses += ' bg-white hover:bg-blue-50 cursor-default border-gray-200';
+                                }
+                            } else {
+                                dayClasses += ' bg-gray-50/50 text-gray-500 border-gray-200';
+                            }
+
+                            if (item.isToday) dayClasses += ' ring-2 ring-blue-500 ring-offset-1 z-10';
+
+                            if (item.dayData) {
+                                const pnlVal = isNaN(item.dayData.pnl) ? 0 : item.dayData.pnl;
+                                const pnlClass = pnlVal >= 0 ? 'text-green-600' : 'text-red-600';
+                                const pnlSign = pnlVal >= 0 ? '+' : '';
+                                pnlHtml = `<div class="text-xs font-semibold text-gray-500">${item.dayData.count} Trade${item.dayData.count > 1 ? 's' : ''}</div><div class="text-xl font-bold ${pnlClass}">${pnlSign}$${Math.abs(pnlVal).toFixed(2)}</div>`;
+                            }
+                            
+                            calendarHtml += `<div class="${dayClasses}" title="${item.dayData ? `Trades: ${item.dayData.count}, P&L: $${item.dayData.pnl.toFixed(2)}` : 'No trades'}"><div class="text-lg font-bold ${item.dayData ? 'text-gray-900' : 'text-gray-400'}">${item.day}</div><div class="flex flex-col items-start mt-1">${pnlHtml}</div></div>`;
+                        } else if (item.type === 'week-total') {
+                            const weekTotalClass = item.total >= 0 ? 'text-green-600' : 'text-red-600';
+                            const weekTotalSign = item.total >= 0 ? '+' : '';
+                            
+                            calendarHtml += `
+                                <div class="p-2 border-r border-b border-gray-200 bg-blue-50 h-28 flex flex-col justify-between">
+                                    <div class="text-lg font-bold text-blue-800">Week</div>
+                                    <div class="flex flex-col items-start mt-1">
+                                        <div class="text-xs font-semibold text-blue-700">Total</div>
+                                        <div class="text-xl font-bold ${weekTotalClass}">${weekTotalSign}$${Math.abs(item.total).toFixed(2)}</div>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    });
+                    
+                    calendarHtml += '</div>';
+                });
+
+                const calendarContent = `
+                    <div class="max-w-4xl mx-auto">
+                        <div class="bg-white p-4 rounded-xl shadow-xl border border-gray-200 mb-6 flex justify-between items-center sticky top-24 z-10">
+                            <button onclick="window.app.changeCalendarMonth(-1)" class="p-2 rounded-full hover:bg-gray-100 transition-colors" title="Previous Month"><i data-lucide="chevron-left" class="w-6 h-6 text-gray-700"></i></button>
+                            <div class="text-center">
+                                <h2 class="text-3xl font-extrabold text-gray-900">${monthNames[month]} ${year}</h2>
+                                <div class="mt-1 text-lg font-semibold ${monthlyPnlClass}">
+                                    Monthly P&L: ${monthlyPnlSign}$${Math.abs(monthlyPnl).toFixed(2)}
+                                </div>
+                            </div>
+                            <button onclick="window.app.changeCalendarMonth(1)" class="p-2 rounded-full hover:bg-gray-100 transition-colors" title="Next Month"><i data-lucide="chevron-right" class="w-6 h-6 text-gray-700"></i></button>
+                        </div>
+                        ${filteredTrades.length === 0 ? `<div class="p-10 bg-white rounded-2xl shadow-xl border border-red-200 min-h-[400px] flex flex-col items-center justify-center"><i data-lucide="alert-triangle" class="w-12 h-12 text-red-500 mb-4"></i><p class="text-xl text-red-700 font-semibold text-center">No trades are currently selected by the filters.</p></div>` : isFilteredOut ? `<div class="p-10 bg-white rounded-2xl shadow-xl border border-orange-200 min-h-[400px] flex flex-col items-center justify-center"><i data-lucide="info" class="w-12 h-12 text-orange-500 mb-4"></i><p class="text-xl text-orange-700 font-semibold text-center">No trades matched your filters in ${monthNames[month]} ${year}.</p></div>` : `<div class="bg-white rounded-2xl shadow-xl border border-gray-200 overflow-hidden"><div class="grid grid-cols-6 border-b border-gray-200 bg-gray-100/70">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Week Total'].map(day => `<div class="p-2 text-center text-sm font-semibold uppercase text-gray-600 border-r border-gray-200 last:border-r-0">${day}</div>`).join('')}</div>${calendarHtml}</div>`}
+                    </div>
+                `;
+                contentContainer.innerHTML = calendarContent;
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            };
+
+            const handleAddTradeSubmit = (event) => {
+                event.preventDefault();
+                const form = event.target;
+                const formData = new FormData(form);
+                document.querySelectorAll('.error-message').forEach(el => el.textContent = '');
+                
+                const tradeData = {
+                    entryDate: formData.get('entryDate'),
+                    symbol: 'XAUUSD',
+                    pnl: parseFloat(formData.get('pnl')),
+                    strategy: formData.get('strategy'),
+                    htfLink: formData.get('htfLink') || '',
+                    ltfLink: formData.get('ltfLink') || '',
+                };
+                
+                let isValid = true;
+                if (!tradeData.entryDate) { document.getElementById('error-entryDate').textContent = 'Entry Date is required.'; isValid = false; }
+                if (isNaN(tradeData.pnl)) { document.getElementById('error-pnl').textContent = 'P&L must be a number.'; isValid = false; }
+                if (!tradeData.strategy) { document.getElementById('error-strategy').textContent = 'Strategy is required.'; isValid = false; }
+
+                if (!isValid) return;
+
+                const netPnl = tradeData.pnl;
+                const entryDateObj = new Date(tradeData.entryDate + 'T00:00:00'); 
+                const tradeNumber = allTrades.length + 1;
+
+                const newTrade = {
+                    id: tradeNumber,
+                    tradeNumber: tradeNumber.toString(),
+                    entryDate: tradeData.entryDate,
+                    symbol: tradeData.symbol,
+                    pnl: tradeData.pnl,
+                    fees: 0,
+                    strategy: tradeData.strategy, 
+                    netPnl: netPnl,
+                    month: monthNames[entryDateObj.getUTCMonth()],
+                    year: entryDateObj.getUTCFullYear().toString(),
+                    htfLink: tradeData.htfLink,
+                    ltfLink: tradeData.ltfLink
+                };
+
+                allTrades.push(newTrade);
+                
+                const { year, month, strategy } = newTrade;
+                if (!allOptions.years.includes(year)) { allOptions.years.push(year); allOptions.years.sort(); }
+                if (!allOptions.months.includes(month)) { allOptions.months.push(month); allOptions.months = sortMonths(allOptions.months); }
+                if (!allOptions.strategies.includes(strategy)) { allOptions.strategies.push(strategy); allOptions.strategies.sort(); }
+                
+                currentFilters.years.add(year);
+                currentFilters.months.add(month);
+                currentFilters.strategies.add(strategy);
+                applyFilters(); 
+                
+                form.reset();
+                showMessageBox('Trade Added Successfully', `Trade #${tradeNumber} for ${tradeData.symbol} recorded with Net P&L of $${netPnl.toFixed(2)}.`);
+                window.app.switchPage('Overview');
+            };
+
+            const renderAddTradePage = () => {
+                const strategyOptions = FIXED_STRATEGIES.map(s => `<option value="${s}">${s}</option>`).join('');
+
+                const addTradeContent = `
+                    <div class="max-w-xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-blue-200">
+                        <h2 class="text-3xl font-extrabold text-gray-900 mb-6 flex items-center">
+                            <i data-lucide="plus-circle" class="w-7 h-7 mr-3 text-blue-600"></i>
+                            Log a New Trade
+                        </h2>
+                        <form id="add-trade-form" onsubmit="window.app.handleAddTradeSubmit(event)">
+                            <div class="space-y-6">
+                                <div>
+                                    <label for="entryDate" class="block text-sm font-medium text-gray-700">Entry Date</label>
+                                    <input type="date" id="entryDate" name="entryDate" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                    <p id="error-entryDate" class="error-message"></p>
+                                </div>
+                                <div>
+                                    <label for="symbol" class="block text-sm font-medium text-gray-700">Symbol</label>
+                                    <input type="text" id="symbol" name="symbol" value="XAUUSD" readonly class="mt-1 block w-full rounded-lg border-gray-300 bg-gray-100 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border text-gray-600 cursor-not-allowed">
+                                    <p id="error-symbol" class="error-message"></p>
+                                </div>
+                                <div>
+                                    <label for="pnl" class="block text-sm font-medium text-gray-700">P&L (Gross Profit/Loss)</label>
+                                    <div class="relative mt-1 rounded-lg shadow-sm">
+                                        <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3"><span class="text-gray-500">$</span></div>
+                                        <input type="number" step="0.01" id="pnl" name="pnl" required placeholder="100.00 or -50.00" class="block w-full rounded-lg border-gray-300 pl-7 pr-3 focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                    </div>
+                                    <p id="error-pnl" class="error-message"></p>
+                                </div>
+                                <div>
+                                    <label for="strategy" class="block text-sm font-medium text-gray-700">Strategy Used</label>
+                                    <select id="strategy" name="strategy" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border bg-white">
+                                        <option value="" disabled selected>Select a strategy...</option>
+                                        ${strategyOptions}
+                                    </select>
+                                    <p id="error-strategy" class="error-message"></p>
+                                </div>
+                                <div>
+                                    <label for="htfLink" class="block text-sm font-medium text-gray-700">HTF Link (Optional)</label>
+                                    <input type="url" id="htfLink" name="htfLink" placeholder="https://www.tradingview.com/x/..." class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                </div>
+                                <div>
+                                    <label for="ltfLink" class="block text-sm font-medium text-gray-700">LTF Link (Optional)</label>
+                                    <input type="url" id="ltfLink" name="ltfLink" placeholder="https://www.tradingview.com/x/..." class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                </div>
+                                <button type="submit" class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-lg text-lg font-semibold text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
+                                    <i data-lucide="save" class="w-5 h-5 mr-2"></i>Save Trade
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                `;
+                contentContainer.innerHTML = addTradeContent;
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+
+            const deleteTrade = (tradeId) => {
+                if (!confirm('Are you sure you want to delete this trade?')) return;
+                
+                const tradeIndex = allTrades.findIndex(trade => trade.id === tradeId);
+                if (tradeIndex === -1) return;
+                
+                allTrades.splice(tradeIndex, 1);
+                
+                for (let i = tradeIndex; i < allTrades.length; i++) {
+                    allTrades[i].id = i + 1;
+                    allTrades[i].tradeNumber = (i + 1).toString();
+                }
+                
+                const uniqueYears = [...new Set(allTrades.map(t => t.year))].sort();
+                const uniqueMonths = sortMonths([...new Set(allTrades.map(t => t.month))]);
+                const csvStrategies = [...new Set(allTrades.map(t => t.strategy))];
+                const uniqueStrategies = [...new Set([...FIXED_STRATEGIES, ...csvStrategies])].sort();
+                
+                allOptions = { years: uniqueYears, months: uniqueMonths, strategies: uniqueStrategies };
+                
+                applyFilters();
+                
+                showMessageBox('Trade Deleted', `Trade #${tradeId} has been deleted and all subsequent trades have been renumbered.`);
+            };
+
+            const switchPage = (pageName) => {
+                currentPage = pageName;
+                Object.keys(tabButtons).forEach(key => {
+                    if (tabButtons[key]) {
+                        tabButtons[key].classList.remove('tab-active');
+                        tabButtons[key].classList.add('border-b-0'); 
+                    }
+                });
+                if (tabButtons[pageName]) {
+                    tabButtons[pageName].classList.add('tab-active');
+                    tabButtons[pageName].classList.remove('border-b-0');
+                }
+                switch (pageName) {
+                    case 'Overview': contentContainer.innerHTML = `<section id="overview-content"></section>`; applyFilters(); break;
+                    case 'Calendar': renderCalendarPage(); break;
+                    case 'Add Trade': renderAddTradePage(); break;
+                    default: contentContainer.innerHTML = `<section id="overview-content"></section>`; applyFilters(); break;
+                }
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+            
+            // Pagination functions
+            const changePage = (page) => {
+                if (page < 1 || page > Math.ceil(filteredTrades.length / tradesPerPage)) return;
+                currentPageNumber = page;
+                renderTradesTable(filteredTrades);
+            };
+            
+            // Sorting functions
+            const handleSortOrderChange = (newOrder) => {
+                sortOrder = newOrder;
+                renderTradesTable(filteredTrades);
+            };
+
+            const initializeData = () => {
+                allTrades = simpleParseCSV(CSV_DATA);
+                
+                const uniqueYears = [...new Set(allTrades.map(t => t.year))].sort();
+                const uniqueMonths = sortMonths([...new Set(allTrades.map(t => t.month))]);
+                
+                const csvStrategies = [...new Set(allTrades.map(t => t.strategy))];
+                const uniqueStrategies = [...new Set([...FIXED_STRATEGIES, ...csvStrategies])].sort();
+
+                allOptions = { years: uniqueYears, months: uniqueMonths, strategies: uniqueStrategies };
+                currentFilters.years = new Set(); currentFilters.months = new Set(); currentFilters.strategies = new Set();
+                
+                if (allTrades.length > 0) {
+                    const sortedTradesByDate = allTrades.sort((a, b) => new Date(b.entryDate) - new Date(a.entryDate));
+                    const latestDateStr = sortedTradesByDate[0].entryDate;
+                    currentCalendarDate = new Date(latestDateStr);
+                } else {
+                    currentCalendarDate = new Date();
+                }
+                switchPage('Overview');
+            };
+
+            const toggleDropdown = (type) => {
+                if (activeDropdown && activeDropdown !== type) {
+                    const oldContent = document.getElementById(`dropdown-content-${activeDropdown}`);
+                    if (oldContent) oldContent.classList.remove('active');
+                }
+                if (type === activeDropdown) {
+                    const content = document.getElementById(`dropdown-content-${type}`);
+                    if (content) content.classList.remove('active');
+                    activeDropdown = null;
+                } else if (type !== null) {
+                    const content = document.getElementById(`dropdown-content-${type}`);
+                    if (content) content.classList.add('active');
+                    activeDropdown = type;
+                }
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            };
+
+            const handleToggleFilter = (type, value) => {
+                const currentSet = currentFilters[type];
+                if (currentSet.size === 0) {
+                    allOptions[type].forEach(option => currentSet.add(option));
+                    currentSet.delete(value);
+                } else if (currentSet.has(value)) {
+                    currentSet.delete(value);
+                } else {
+                    currentSet.add(value);
+                }
+                if (currentSet.size === allOptions[type].length) currentFilters[type].clear();
+                applyFilters();
+            };
+
+            const handleClearAllFilters = () => {
+                currentFilters.years.clear();
+                currentFilters.months.clear();
+                currentFilters.strategies.clear();
+                applyFilters();
+            };
+
+            const handleSelectAllOrClear = (type, isAllSelected) => {
+                if (isAllSelected) currentFilters[type].clear();
+                else currentFilters[type] = new Set(allOptions[type]);
+                applyFilters();
+            }
+
+            window.onload = initializeData;
+
+            window.app = {
+                switchPage,
+                toggleDropdown,
+                handleToggleFilter,
+                handleClearAllFilters,
+                handleSelectAllOrClear,
+                changeCalendarMonth,
+                handleAddTradeSubmit, 
+                deleteTrade,
+                showMessageBox,
+                closeMessageBox,
+                changePage,
+                handleSortOrderChange
+            };
+        })();
+    </script>
+</body>
+</html>
