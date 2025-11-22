@@ -1002,6 +1002,32 @@
                                     <p id="error-pnl" class="error-message"></p>
                                 </div>
                                 <div>
+                                    <label for="strategy" class="block text-sm font-medium text-gray-700">Strategy Used</label>
+                                    <select id="strategy" name="strategy" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border bg-white">
+                                        <option value="" disabled selected>Select a strategy...</option>
+                                        ${strategyOptions}
+                                    </select>
+                                    <p id="error-strategy" class="error-message"></p>
+                                </div>
+                                <div>
+                                    <label for="htfLink" class="block text-sm font-medium text-gray-700">HTF Link (Optional)</label>
+                                    <input type="url" id="htfLink" name="htfLink" placeholder="https://www.tradingview.com/x/..." class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                </div>
+                                <div>
+                                    <label for="ltfLink" class="block text-sm font-medium text-gray-700">LTF Link (Optional)</label>
+                                    <input type="url" id="ltfLink" name="ltfLink" placeholder="https://www.tradingview.com/x/..." class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-3 border">
+                                </div>
+                                <button type="submit" class="w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-lg text-lg font-semibold text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
+                                    <i data-lucide="save" class="w-5 h-5 mr-2"></i>Save Trade
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                `;
+                contentContainer.innerHTML = addTradeContent;
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            }
+
             const deleteTrade = async (tradeId) => {
                 if (!confirm('Are you sure you want to delete this trade? This cannot be undone.')) return;
 
